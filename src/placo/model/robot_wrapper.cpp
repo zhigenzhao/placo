@@ -9,6 +9,7 @@
 #include "pinocchio/algorithm/centroidal.hpp"
 #include "pinocchio/collision/collision.hpp"
 #include "pinocchio/collision/distance.hpp"
+#include "pinocchio/parsers/mjcf.hpp"
 #include "placo/tools/utils.h"
 #include <boost/filesystem.hpp>
 #include <json/json.h>
@@ -28,11 +29,18 @@ RobotWrapper::RobotWrapper(std::string model_directory, int flags, std::string u
   {
     fs::path path = model_directory;
     urdf_filename = model_directory;
-    model_directory = path.parent_path().string();
+    model_directory = path.parent_path().string(); // Convert path to string
   }
   else
   {
     urdf_filename = model_directory + "/robot.urdf";
+  }
+
+  int filename_length = urdf_filename.length();
+  bool is_xml = false;
+  if (urdf_filename.substr(filename_length - 4, 4) == ".xml")
+  {
+    is_xml = true;
   }
 
   if (urdf_content != "")
@@ -43,8 +51,14 @@ RobotWrapper::RobotWrapper(std::string model_directory, int flags, std::string u
   }
   else
   {
-    pinocchio::urdf::buildModel(urdf_filename, root_joint, model);
-    pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::COLLISION, collision_model, model_directory);
+    if (is_xml) {
+      pinocchio::mjcf::buildModel(urdf_filename, root_joint, model);
+      pinocchio::mjcf::buildGeom(model, urdf_filename, pinocchio::COLLISION, collision_model);
+    }
+    else {
+      pinocchio::urdf::buildModel(urdf_filename, root_joint, model);
+      pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::COLLISION, collision_model, model_directory);
+    }
   }
 
   if (flags & COLLISION_AS_VISUAL)
@@ -56,7 +70,12 @@ RobotWrapper::RobotWrapper(std::string model_directory, int flags, std::string u
     }
     else
     {
-      pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::COLLISION, visual_model, model_directory);
+      if (is_xml) {
+        pinocchio::mjcf::buildGeom(model, urdf_filename, pinocchio::COLLISION, visual_model);
+      }
+      else {
+        pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::COLLISION, visual_model, model_directory);    
+      }
     }
   }
   else
@@ -68,7 +87,12 @@ RobotWrapper::RobotWrapper(std::string model_directory, int flags, std::string u
     }
     else
     {
-      pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::VISUAL, visual_model, model_directory);
+      if (is_xml) {
+        pinocchio::mjcf::buildGeom(model, urdf_filename, pinocchio::VISUAL, visual_model);
+      }
+      else {
+        pinocchio::urdf::buildGeom(model, urdf_filename, pinocchio::VISUAL, visual_model, model_directory);
+      } 
     }
   }
 

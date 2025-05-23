@@ -5,3 +5,4 @@ xml/
 latex/
 placo.pyi
 dist/
+build/
