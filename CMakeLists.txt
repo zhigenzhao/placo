@@ -89,6 +89,8 @@ add_library(libplaco SHARED
     src/placo/kinematics/com_polygon_constraint.cpp
     src/placo/kinematics/joint_space_half_spaces_constraint.cpp
     src/placo/kinematics/cone_constraint.cpp
+    src/placo/kinematics/yaw_constraint.cpp
+    src/placo/kinematics/distance_constraint.cpp
     src/placo/kinematics/axis_align_task.cpp
 
     # Dynamics QP solver
@@ -175,8 +177,14 @@ ADD_CUSTOM_TARGET(placo_utils_files ALL
                   ${CMAKE_BINARY_DIR}/${PYTHON_SITELIB}/placo_utils
                   )
 
+if (APPLE)
+set_target_properties(placo PROPERTIES INSTALL_RPATH "@loader_path/../..")
+set_target_properties(libplaco PROPERTIES INSTALL_RPATH "@loader_path")
+else()
 set_target_properties(placo PROPERTIES INSTALL_RPATH "\$ORIGIN/../..")
 set_target_properties(libplaco PROPERTIES INSTALL_RPATH "\$ORIGIN")
+endif()
+
 install(TARGETS libplaco DESTINATION lib)
 install(TARGETS placo DESTINATION ${PYTHON_SITELIB})
 install(FILES ${CMAKE_BINARY_DIR}/${PYTHON_SITELIB}/placo.pyi DESTINATION ${PYTHON_SITELIB})

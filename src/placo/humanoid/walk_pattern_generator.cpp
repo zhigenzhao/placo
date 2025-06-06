@@ -9,29 +9,24 @@ namespace placo::humanoid
 using namespace placo::problem;
 using namespace placo::tools;
 
-
 WalkPatternGenerator::TrajectoryPart::TrajectoryPart(FootstepsPlanner::Support support, double t_start)
-  :  support(support)
-  , t_start(t_start)
+  : t_start(t_start), support(support)
 {
 }
 
-WalkPatternGenerator::Trajectory::Trajectory() 
-  : left_foot_yaw(true)
-  , right_foot_yaw(true)
-  , trunk_yaw(true)
+WalkPatternGenerator::Trajectory::Trajectory() : left_foot_yaw(true), right_foot_yaw(true), trunk_yaw(true)
 {
   T.setIdentity();
 }
 
-WalkPatternGenerator::Trajectory::Trajectory(double com_target_z, double t_start, double trunk_pitch, double trunk_roll) 
-  : left_foot_yaw(true)
-  , right_foot_yaw(true)
-  , trunk_yaw(true)
+WalkPatternGenerator::Trajectory::Trajectory(double com_target_z, double t_start, double trunk_pitch, double trunk_roll)
+  : t_start(t_start)
   , com_target_z(com_target_z)
-  , t_start(t_start)
   , trunk_pitch(trunk_pitch)
   , trunk_roll(trunk_roll)
+  , left_foot_yaw(true)
+  , right_foot_yaw(true)
+  , trunk_yaw(true)
 {
   T.setIdentity();
 }
@@ -151,6 +146,26 @@ Eigen::Vector3d WalkPatternGenerator::Trajectory::get_v_world_foot(HumanoidRobot
   return (side == HumanoidRobot::Left) ? get_v_world_left(t) : get_v_world_right(t);
 }
 
+double WalkPatternGenerator::Trajectory::get_yaw_world_left(double t)
+{
+  return frame_yaw(T.rotation()) + left_foot_yaw.pos(t);
+}
+
+double WalkPatternGenerator::Trajectory::get_yaw_world_right(double t)
+{
+  return frame_yaw(T.rotation()) + right_foot_yaw.pos(t);
+}
+
+double WalkPatternGenerator::Trajectory::get_yaw_world_foot(HumanoidRobot::Side side, double t)
+{
+  return (side == HumanoidRobot::Left) ? get_yaw_world_left(t) : get_yaw_world_right(t);
+}
+
+double WalkPatternGenerator::Trajectory::get_yaw_world_trunk(double t)
+{
+  return frame_yaw(T.rotation()) + trunk_yaw.pos(t);
+}
+
 Eigen::Vector3d WalkPatternGenerator::Trajectory::get_p_world_CoM(double t)
 {
   TrajectoryPart& part = _findPart(parts, t);
@@ -197,6 +212,25 @@ Eigen::Matrix3d WalkPatternGenerator::Trajectory::get_R_world_trunk(double t)
   return T.linear() * R_world_trunk;
 }
 
+Eigen::Vector3d WalkPatternGenerator::Trajectory::get_p_support_CoM(double t)
+{
+  TrajectoryPart& part = _findPart(parts, t);
+  Eigen::Affine3d T_support_world = placo::tools::flatten_on_floor(get_T_world_foot(part.support.side(), t)).inverse();
+  return T_support_world * get_p_world_CoM(t);
+}
+
+Eigen::Vector3d WalkPatternGenerator::Trajectory::get_v_support_CoM(double t)
+{
+  TrajectoryPart& part = _findPart(parts, t);
+  Eigen::Affine3d T_support_world = placo::tools::flatten_on_floor(get_T_world_foot(part.support.side(), t)).inverse();
+  return T_support_world.linear() * get_v_world_CoM(t);
+}
+
+Eigen::Vector2d WalkPatternGenerator::Trajectory::get_p_support_DCM(double t, double omega)
+{
+  return get_p_support_CoM(t).head(2) + (1 / omega) * get_v_support_CoM(t).head(2);
+}
+
 HumanoidRobot::Side WalkPatternGenerator::Trajectory::support_side(double t)
 {
   return _findPart(parts, t).support.side();
@@ -237,7 +271,7 @@ FootstepsPlanner::Support WalkPatternGenerator::Trajectory::get_next_support(dou
 {
   int index;
   _findPart(parts, t, &index);
-  if (index + n >= parts.size())
+  if (index + n >= (int)parts.size())
   {
     return T * parts.back().support;
   }
@@ -317,17 +351,21 @@ void WalkPatternGenerator::plan_sgl_support(Trajectory& trajectory, int part_ind
   {
     Eigen::Vector3d start = old_trajectory->get_T_world_foot(flying_side, trajectory.t_start).translation();
     Eigen::Vector3d start_vel = old_trajectory->get_v_world_foot(flying_side, trajectory.t_start);
-    part.swing_trajectory = SwingFootCubic::make_trajectory(part.t_start, virt_duration, parameters.walk_foot_height, 
-          parameters.walk_foot_rise_ratio, start, T_world_end.translation(), part.support.elapsed_ratio, start_vel);
+    part.swing_trajectory = SwingFootCubic::make_trajectory(
+        part.t_start, virt_duration, parameters.walk_foot_height, parameters.walk_foot_rise_ratio, start,
+        T_world_end.translation(), part.support.elapsed_ratio, start_vel);
 
-    double replan_yaw = old_trajectory->foot_yaw(flying_side).pos(trajectory.t_start);
-    trajectory.foot_yaw(flying_side).add_point(trajectory.t_start, replan_yaw, 0);
+    // Initiate the flying foot yaw spline with the old trajectory foot yaw position and velocity
+    trajectory.foot_yaw(flying_side)
+        .add_point(trajectory.t_start, old_trajectory->get_yaw_world_foot(flying_side, trajectory.t_start),
+                   old_trajectory->foot_yaw(flying_side).vel(trajectory.t_start));
   }
   else
   {
     Eigen::Vector3d start = trajectory.parts[part_index - 1].support.footstep_frame(flying_side).translation();
-    part.swing_trajectory = SwingFootCubic::make_trajectory(part.t_start, virt_duration, parameters.walk_foot_height, 
-          parameters.walk_foot_rise_ratio, start, T_world_end.translation());
+    part.swing_trajectory =
+        SwingFootCubic::make_trajectory(part.t_start, virt_duration, parameters.walk_foot_height,
+                                        parameters.walk_foot_rise_ratio, start, T_world_end.translation());
   }
 
   trajectory.foot_yaw(flying_side).add_point(part.t_end, frame_yaw(T_world_end.rotation()), 0);
@@ -348,15 +386,17 @@ void WalkPatternGenerator::plan_feet_trajectories(Trajectory& trajectory, Trajec
   trajectory.add_supports(trajectory.t_start, trajectory.parts[0].support);
   if (old_trajectory == nullptr)
   {
+    // Starting the walk in double support, we set the trunk yaw aligned with the first support
     trajectory.trunk_yaw.add_point(trajectory.t_start, frame_yaw(trajectory.parts[0].support.frame().rotation()), 0);
   }
   else
   {
-    trajectory.trunk_yaw.add_point(trajectory.t_start, old_trajectory->trunk_yaw.pos(trajectory.t_start),
+    // Initiate the trunk_yaw spline with the old trajectory trunk_yaw position and velocity
+    trajectory.trunk_yaw.add_point(trajectory.t_start, old_trajectory->get_yaw_world_trunk(trajectory.t_start),
                                    old_trajectory->trunk_yaw.vel(trajectory.t_start));
   }
 
-  for (int i; i<trajectory.parts.size(); i++)
+  for (int i = 0; i < (int)trajectory.parts.size(); i++)
   {
     // Single support
     if (trajectory.parts[i].support.footsteps.size() == 1)
@@ -371,12 +411,18 @@ void WalkPatternGenerator::plan_feet_trajectories(Trajectory& trajectory, Trajec
   }
 }
 
-void WalkPatternGenerator::constrain_lipm(problem::Problem& problem, LIPM& lipm, FootstepsPlanner::Support& support, double omega_2, HumanoidParameters& parameters)
+void WalkPatternGenerator::constrain_lipm(problem::Problem& problem, LIPM& lipm, FootstepsPlanner::Support& support,
+                                          double omega_2, HumanoidParameters& parameters)
 {
-  for (int timestep = 1; timestep < lipm.timesteps+1; timestep++)
+  for (int timestep = 1; timestep < lipm.timesteps + 1; timestep++)
   {
     // Ensuring ZMP remains in the support polygon
-    problem.add_constraint(PolygonConstraint::in_polygon_xy(lipm.zmp(timestep, omega_2), support.support_polygon(), parameters.zmp_margin));
+    auto& zmp_constraint = problem.add_constraint(PolygonConstraint::in_polygon_xy(
+        lipm.zmp(timestep, omega_2), support.support_polygon(), parameters.zmp_margin));
+    if (soft)
+    {
+      zmp_constraint.configure(ProblemConstraint::Soft, zmp_in_support_weight);
+    }
 
     // Optional offset for single supports
     double x_offset = 0., y_offset = 0.;
@@ -388,20 +434,30 @@ void WalkPatternGenerator::constrain_lipm(problem::Problem& problem, LIPM& lipm,
 
     // ZMP reference trajectory : target is the center of the support polygon
     Eigen::Vector2d zmp_target = (support.frame() * Eigen::Vector3d(x_offset, y_offset, 0)).head(2);
-    problem.add_constraint(lipm.zmp(timestep, omega_2) == zmp_target).configure(ProblemConstraint::Soft, parameters.zmp_reference_weight);
-  
+    problem.add_constraint(lipm.zmp(timestep, omega_2) == zmp_target)
+        .configure(ProblemConstraint::Soft, parameters.zmp_reference_weight);
+
     // At the end of an end support, we reach the target with a null speed and a null acceleration
     if (support.end && timestep == lipm.timesteps)
     {
-      problem.add_constraint(lipm.pos(timestep) == Eigen::Vector2d(support.frame().translation().x(), support.frame().translation().y()));
-      problem.add_constraint(lipm.vel(timestep) == Eigen::Vector2d(0., 0.));
-      problem.add_constraint(lipm.acc(timestep) == Eigen::Vector2d(0., 0.));
+      auto& pos_constraint = problem.add_constraint(
+          lipm.pos(timestep) == Eigen::Vector2d(support.frame().translation().x(), support.frame().translation().y()));
+      auto& vel_constraint = problem.add_constraint(lipm.vel(timestep) == Eigen::Vector2d(0., 0.));
+      auto& acc_constraint = problem.add_constraint(lipm.acc(timestep) == Eigen::Vector2d(0., 0.));
+
+      if (soft)
+      {
+        pos_constraint.configure(ProblemConstraint::Soft, stop_end_support_weight);
+        vel_constraint.configure(ProblemConstraint::Soft, stop_end_support_weight);
+        acc_constraint.configure(ProblemConstraint::Soft, stop_end_support_weight);
+      }
     }
   }
 }
 
-void WalkPatternGenerator::plan_com(Trajectory& trajectory, std::vector<FootstepsPlanner::Support>& supports, 
-  Eigen::Vector2d initial_pos, Eigen::Vector2d initial_vel, Eigen::Vector2d initial_acc)
+bool WalkPatternGenerator::plan_com(Trajectory& trajectory, std::vector<FootstepsPlanner::Support>& supports,
+                                    Eigen::Vector2d initial_pos, Eigen::Vector2d initial_vel,
+                                    Eigen::Vector2d initial_acc)
 {
   // Initialization of the LIPM problem
   problem::Problem problem;
@@ -409,7 +465,7 @@ void WalkPatternGenerator::plan_com(Trajectory& trajectory, std::vector<Footstep
 
   // Building each TrajectoryPart and LIPM
   double t = trajectory.t_start;
-  for (auto& support: supports)
+  for (auto& support : supports)
   {
     double support_duration = (1 - support.elapsed_ratio) * support_default_duration(support) * support.time_ratio;
     int lipm_timesteps = std::max(1, int((1 - support.elapsed_ratio) * support_default_timesteps(support)));
@@ -439,14 +495,24 @@ void WalkPatternGenerator::plan_com(Trajectory& trajectory, std::vector<Footstep
   trajectory.t_end = t;
 
   // Solving the problem
-  problem.solve();
-  
-  for (int i = 0; i < trajectory.parts.size(); i++)
+  try
+  {
+    problem.solve();
+  }
+  catch (const std::exception& e)
+  {
+    return false;
+  }
+
+  // Attributing the LIPM trajectories to the trajectory parts
+  for (int i = 0; i < (int)trajectory.parts.size(); i++)
   {
     auto& part = trajectory.parts[i];
     part.com_trajectory = lipms[i].get_trajectory();
     part.support.target_world_dcm = part.com_trajectory.dcm(part.t_end, omega);
   }
+
+  return true;
 }
 
 WalkPatternGenerator::Trajectory WalkPatternGenerator::plan(std::vector<FootstepsPlanner::Support>& supports,
@@ -486,7 +552,13 @@ WalkPatternGenerator::Trajectory WalkPatternGenerator::replan(std::vector<Footst
   Eigen::Vector2d initial_pos = old_trajectory.get_p_world_CoM(t_replan).head(2);
   Eigen::Vector2d initial_vel = old_trajectory.get_v_world_CoM(t_replan).head(2);
   Eigen::Vector2d initial_acc = old_trajectory.get_a_world_CoM(t_replan).head(2);
-  plan_com(trajectory, supports, initial_pos, initial_vel, initial_acc);
+  bool planned_com = plan_com(trajectory, supports, initial_pos, initial_vel, initial_acc);
+
+  // If we can't plan the CoM, we return the trimmed old trajectory
+  if (!planned_com)
+  {
+    return trim_old_trajectory(old_trajectory, t_replan);
+  }
 
   plan_feet_trajectories(trajectory, &old_trajectory);
 
@@ -496,26 +568,24 @@ WalkPatternGenerator::Trajectory WalkPatternGenerator::replan(std::vector<Footst
 bool WalkPatternGenerator::can_replan_supports(Trajectory& trajectory, double t_replan)
 {
   // We can't replan from an "end", a "start" or if the next support is an "end"
-  if (trajectory.get_support(t_replan).end || trajectory.get_support(t_replan).start || trajectory.get_next_support(t_replan).end)
+  if (trajectory.get_support(t_replan).end || trajectory.get_support(t_replan).start ||
+      trajectory.get_next_support(t_replan).end)
   {
     return false;
   }
 
-  // XXX: Need to move to a branch
-  // We can't replan if more than 1/2 of the support phase has passed
-  // if (trajectory.get_support(t_replan).elapsed_ratio > 0.8)
-  // {
-  //   return false;
-  // }
-  // if (t_replan - trajectory.get_support(t_replan).t_start < 0.005)
-  // {
-  //   return false;
-  // }
+  // We can't replan if the current support is a double support
+  if (trajectory.get_support(t_replan).is_both())
+  {
+    return false;
+  }
 
   return true;
 }
 
-std::vector<FootstepsPlanner::Support> WalkPatternGenerator::replan_supports(FootstepsPlanner& planner, Trajectory& trajectory, double t_replan, double t_last_replan)
+std::vector<FootstepsPlanner::Support> WalkPatternGenerator::replan_supports(FootstepsPlanner& planner,
+                                                                             Trajectory& trajectory, double t_replan,
+                                                                             double t_last_replan)
 {
   if (!can_replan_supports(trajectory, t_replan))
   {
@@ -552,18 +622,21 @@ std::vector<FootstepsPlanner::Support> WalkPatternGenerator::replan_supports(Foo
   std::vector<FootstepsPlanner::Support> supports;
   if (current_support.is_both())
   {
-    supports = FootstepsPlanner::make_supports(footsteps, current_support.t_start, false, parameters.has_double_support(), true);
+    supports = FootstepsPlanner::make_supports(footsteps, current_support.t_start, false,
+                                               parameters.has_double_support(), true);
     supports.erase(supports.begin());
   }
   else
   {
-    supports = FootstepsPlanner::make_supports(footsteps, current_support.t_start, false, parameters.has_double_support(), true);
+    supports = FootstepsPlanner::make_supports(footsteps, current_support.t_start, false,
+                                               parameters.has_double_support(), true);
   }
 
   double elapsed_duration = t_replan - std::max(t_last_replan, current_support.t_start);
-  supports[0].elapsed_ratio = current_support.elapsed_ratio + elapsed_duration / (support_default_duration(current_support) * current_support.time_ratio);
+  supports[0].elapsed_ratio =
+      current_support.elapsed_ratio +
+      elapsed_duration / (support_default_duration(current_support) * current_support.time_ratio);
   supports[0].time_ratio = current_support.time_ratio;
-  supports[0].target_world_dcm = current_support.target_world_dcm;
   return supports;
 }
 
@@ -595,25 +668,19 @@ double WalkPatternGenerator::support_default_duration(FootstepsPlanner::Support&
 
 void WalkPatternGenerator::Trajectory::print_parts_timings()
 {
-  for (int i=0; i<parts.size(); i++)
+  for (int i = 0; i < (int)parts.size(); i++)
   {
     std::cout << "Part " << i << " : start at " << parts[i].t_start << ", end at " << parts[i].t_end << std::endl;
   }
 }
 
-std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(double t, 
-  std::vector<FootstepsPlanner::Support> supports, Eigen::Vector2d world_measured_dcm)
+std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(
+    double t, std::vector<FootstepsPlanner::Support> supports, Eigen::Vector2d world_measured_dcm)
 {
   FootstepsPlanner::Support current_support = supports[0];
-  FootstepsPlanner::Support next_support = supports[1];
-
   if (current_support.is_both())
   {
     throw std::runtime_error("Can't modify flying target and step duration if the current support is both");
-  }
-  if (next_support.is_both())
-  {
-    throw std::runtime_error("Next support is both, not supported for now");
   }
 
   placo::problem::Problem problem;
@@ -626,10 +693,15 @@ std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(dou
   Eigen::Matrix2d R_world_support = current_support.frame().rotation().topLeftCorner(2, 2);
   Eigen::Vector2d p_world_support = current_support.frame().translation().head(2);
 
-  // Decision variables
-  placo::problem::Variable* support_next_zmp = &problem.add_variable(2); // ZMP of the next support expressed in the current support frame
-  placo::problem::Variable* tau = &problem.add_variable(1); // exp(omega * T) where T is the end of the current support
-  placo::problem::Variable* support_dcm_offset = &problem.add_variable(2); // Offset of the DCM from the ZMP in the current support frame
+  // ----------------- Decision variables: ------------------
+  // ZMP of the next support expressed in the current support frame
+  placo::problem::Variable* support_next_zmp = &problem.add_variable(2);
+
+  // exp(omega * T) where T is the end of the current support
+  placo::problem::Variable* tau = &problem.add_variable(1);
+
+  // Offset of the DCM from the ZMP in the current support frame
+  placo::problem::Variable* support_dcm_offset = &problem.add_variable(2);
 
   // ----------------- Objective functions: -----------------
   // Time reference
@@ -638,27 +710,26 @@ std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(dou
 
   // ZMP Reference (expressed in the world frame)
   Expression world_next_zmp_expr = p_world_support + R_world_support * support_next_zmp->expr();
-  problem.add_constraint(world_next_zmp_expr == next_support.frame().translation().head(2)).configure(ProblemConstraint::Soft, w2);
+  Eigen::Vector2d world_target_zmp = supports[1].frame().translation().head(2);
+  problem.add_constraint(world_next_zmp_expr == world_target_zmp).configure(ProblemConstraint::Soft, w2);
 
   // DCM offset reference (expressed in the world frame)
-  Eigen::Vector2d world_target_dcm_offset = current_support.target_world_dcm - next_support.frame().translation().head(2);
-  // Eigen::Vector2d world_target_dcm_offset = world_end_dcm - next_support.frame().translation().head(2);
-  // std::cout << "world_target_dcm_offset: " << world_target_dcm_offset.transpose() << std::endl;
-
+  Eigen::Vector2d world_target_dcm_offset = current_support.target_world_dcm - world_target_zmp;
   Expression world_dcm_offset_expr = R_world_support * support_dcm_offset->expr();
   problem.add_constraint(world_dcm_offset_expr == world_target_dcm_offset).configure(ProblemConstraint::Soft, w3);
 
   // --------------------- Constraints: ---------------------
   // Time constraints
-  double T_min = std::max(0.15, elapsed_time); // Should probably add an offset to elapsed_time
-  double T_max = std::max(3., elapsed_time); // Arbitrary value of 3s
+  double T_min = std::max(0.15, elapsed_time);  // Should probably add an offset to elapsed_time
+  double T_max = std::max(3., elapsed_time);    // Arbitrary value of 3s
   problem.add_constraint(tau->expr() >= exp(omega * (T_min))).configure(ProblemConstraint::Hard);
   problem.add_constraint(tau->expr() <= exp(omega * (T_max))).configure(ProblemConstraint::Hard);
 
   // ZMP and DCM offset constraints (expressed in the current support frame)
   if (current_support.side() == HumanoidRobot::Side::Right)
   {
-    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_next_zmp->expr(), parameters.op_space_polygon)).configure(ProblemConstraint::Hard);
+    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_next_zmp->expr(), parameters.op_space_polygon))
+        .configure(ProblemConstraint::Hard);
 
     std::vector<Eigen::Vector2d> dcm_offset_polygon = parameters.dcm_offset_polygon;
     for (auto& point : dcm_offset_polygon)
@@ -666,7 +737,8 @@ std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(dou
       point(0) = -point(0);
       point(1) = -point(1);
     }
-    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_dcm_offset->expr(), parameters.dcm_offset_polygon)).configure(ProblemConstraint::Soft, w_viability);
+    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_dcm_offset->expr(), parameters.dcm_offset_polygon))
+        .configure(ProblemConstraint::Soft, w_viability);
   }
   else
   {
@@ -676,33 +748,42 @@ std::vector<FootstepsPlanner::Support> WalkPatternGenerator::update_supports(dou
       point(0) = -point(0);
       point(1) = -point(1);
     }
-    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_next_zmp->expr(), op_space_polygon)).configure(ProblemConstraint::Hard);
+    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_next_zmp->expr(), op_space_polygon))
+        .configure(ProblemConstraint::Hard);
 
-    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_dcm_offset->expr(), parameters.dcm_offset_polygon)).configure(ProblemConstraint::Soft, w_viability);
+    problem.add_constraint(PolygonConstraint::in_polygon_xy(support_dcm_offset->expr(), parameters.dcm_offset_polygon))
+        .configure(ProblemConstraint::Soft, w_viability);
   }
-  
+
   // LIPM Dynamics (expressed in the world frame)
   double duration = std::max(0., T - elapsed_time);
-  Eigen::Vector2d world_virtual_zmp = get_optimal_zmp(world_measured_dcm, current_support.target_world_dcm, duration, current_support);
+  Eigen::Vector2d world_virtual_zmp =
+      get_optimal_zmp(world_measured_dcm, current_support.target_world_dcm, duration, current_support);
   // Eigen::Vector2d world_virtual_zmp = flatten_on_floor(current_support.frame()).translation().head(2);
-  problem.add_constraint(world_next_zmp_expr + world_dcm_offset_expr == (world_measured_dcm - world_virtual_zmp) * exp(-omega * elapsed_time) * tau->expr() + world_virtual_zmp).configure(ProblemConstraint::Hard);
+  problem
+      .add_constraint(world_next_zmp_expr + world_dcm_offset_expr ==
+                      (world_measured_dcm - world_virtual_zmp) * exp(-omega * elapsed_time) * tau->expr() +
+                          world_virtual_zmp)
+      .configure(ProblemConstraint::Hard);
 
   problem.solve();
 
   // Updating next support position
+  // XXX: Problème de transform T qui s'applique ?
   Eigen::Vector2d world_next_zmp_val = p_world_support + R_world_support * support_next_zmp->value;
   supports[1].footsteps[0].frame.translation().x() = world_next_zmp_val(0);
   supports[1].footsteps[0].frame.translation().y() = world_next_zmp_val(1);
 
   // Updating current support remaining duration
   double support_remaining_time = log(tau->value(0)) / omega - elapsed_time;
-  supports[0].time_ratio = support_remaining_time / (support_default_duration(current_support) * (1 - current_support.elapsed_ratio));
+  supports[0].time_ratio =
+      support_remaining_time / (support_default_duration(current_support) * (1 - current_support.elapsed_ratio));
 
   return supports;
 }
 
-Eigen::Vector2d WalkPatternGenerator::get_optimal_zmp(Eigen::Vector2d world_dcm_start, 
-  Eigen::Vector2d world_dcm_end, double duration, FootstepsPlanner::Support& support)
+Eigen::Vector2d WalkPatternGenerator::get_optimal_zmp(Eigen::Vector2d world_dcm_start, Eigen::Vector2d world_dcm_end,
+                                                      double duration, FootstepsPlanner::Support& support)
 {
   placo::problem::Problem problem;
 
@@ -710,13 +791,56 @@ Eigen::Vector2d WalkPatternGenerator::get_optimal_zmp(Eigen::Vector2d world_dcm_
   placo::problem::Variable* world_zmp = &problem.add_variable(2);
 
   // LIPM Dynamics
-  // problem.add_constraint(world_dcm_end == (world_dcm_start - world_zmp->expr()) * exp(omega * duration) + world_zmp->expr()).configure(ProblemConstraint::Soft, 1);
-  problem.add_constraint(world_zmp->expr() == (world_dcm_end - world_dcm_start * exp(omega * duration)) / (1 - exp(omega * duration))).configure(ProblemConstraint::Soft, 1);
+  // problem.add_constraint(world_dcm_end == (world_dcm_start - world_zmp->expr()) * exp(omega * duration) +
+  // world_zmp->expr()).configure(ProblemConstraint::Soft, 1);
+  problem
+      .add_constraint(world_zmp->expr() ==
+                      (world_dcm_end - world_dcm_start * exp(omega * duration)) / (1 - exp(omega * duration)))
+      .configure(ProblemConstraint::Soft, 1);
 
   // ZMP constrained to stay in the support polygon
-  problem.add_constraint(PolygonConstraint::in_polygon_xy(world_zmp->expr(), support.support_polygon(), parameters.zmp_margin)).configure(ProblemConstraint::Hard);
+  problem
+      .add_constraint(
+          PolygonConstraint::in_polygon_xy(world_zmp->expr(), support.support_polygon(), parameters.zmp_margin))
+      .configure(ProblemConstraint::Hard);
 
   problem.solve();
   return world_zmp->value;
+}
+
+WalkPatternGenerator::Trajectory WalkPatternGenerator::trim_old_trajectory(Trajectory& old_trajectory, double t_replan)
+{
+  Trajectory trajectory = old_trajectory;
+  trajectory.t_start = t_replan;
+  trajectory.replan_success = false;
+
+  // Remove the parts before the replan time
+  std::vector<WalkPatternGenerator::TrajectoryPart> new_parts;
+  for (auto part : old_trajectory.parts)
+  {
+    if (t_replan >= part.t_start)
+    {
+      if (t_replan < part.t_end)
+      {
+        TrajectoryPart new_part = part;
+        new_part.t_start = t_replan;
+
+        // Updating the elapsed ratio of the support
+        double elapsed_duration = t_replan - std::max(old_trajectory.t_start, new_part.support.t_start);
+        new_part.support.elapsed_ratio =
+            new_part.support.elapsed_ratio +
+            elapsed_duration / (support_default_duration(new_part.support) * new_part.support.time_ratio);
+
+        new_parts.push_back(new_part);
+      }
+    }
+    else
+    {
+      new_parts.push_back(part);
+    }
+  }
+  trajectory.parts = new_parts;
+
+  return trajectory;
 }
 }  // namespace placo::humanoid

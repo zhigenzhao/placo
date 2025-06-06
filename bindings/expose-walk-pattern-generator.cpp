@@ -23,9 +23,11 @@ using namespace placo::humanoid;
 void exposeWalkPatternGenerator()
 {
   class__<WalkPatternGenerator::TrajectoryPart>("WPGTrajectoryPart", init<FootstepsPlanner::Support, double>())
-      .add_property("t_start", &WalkPatternGenerator::TrajectoryPart::t_start)
+      .add_property("t_start", &WalkPatternGenerator::TrajectoryPart::t_start,
+                    &WalkPatternGenerator::TrajectoryPart::t_start)
       .add_property("t_end", &WalkPatternGenerator::TrajectoryPart::t_end, &WalkPatternGenerator::TrajectoryPart::t_end)
-      .add_property("support", &WalkPatternGenerator::TrajectoryPart::support);
+      .add_property("support", &WalkPatternGenerator::TrajectoryPart::support,
+                    &WalkPatternGenerator::TrajectoryPart::support);
 
   class__<WalkPatternGenerator::Trajectory>("WPGTrajectory", init<double, double, double, double>())
       .add_property("t_start", &WalkPatternGenerator::Trajectory::t_start)
@@ -33,7 +35,8 @@ void exposeWalkPatternGenerator()
       .add_property("com_target_z", &WalkPatternGenerator::Trajectory::com_target_z)
       .add_property("trunk_pitch", &WalkPatternGenerator::Trajectory::trunk_pitch)
       .add_property("trunk_roll", &WalkPatternGenerator::Trajectory::trunk_roll)
-      .add_property("kept_ts", &WalkPatternGenerator::Trajectory::kept_ts)
+      .add_property("parts", &WalkPatternGenerator::Trajectory::parts)
+      .add_property("replan_success", &WalkPatternGenerator::Trajectory::replan_success)
       .def("get_T_world_left", &WalkPatternGenerator::Trajectory::get_T_world_left)
       .def("get_T_world_right", &WalkPatternGenerator::Trajectory::get_T_world_right)
       .def("get_v_world_right", &WalkPatternGenerator::Trajectory::get_v_world_right)
@@ -45,6 +48,9 @@ void exposeWalkPatternGenerator()
       .def("get_p_world_ZMP", &WalkPatternGenerator::Trajectory::get_p_world_ZMP)
       .def("get_p_world_DCM", &WalkPatternGenerator::Trajectory::get_p_world_DCM)
       .def("get_R_world_trunk", &WalkPatternGenerator::Trajectory::get_R_world_trunk)
+      .def("get_p_support_CoM", &WalkPatternGenerator::Trajectory::get_p_support_CoM)
+      .def("get_v_support_CoM", &WalkPatternGenerator::Trajectory::get_v_support_CoM)
+      .def("get_p_support_DCM", &WalkPatternGenerator::Trajectory::get_p_support_DCM)
       .def("support_side", &WalkPatternGenerator::Trajectory::support_side)
       .def("support_is_both", &WalkPatternGenerator::Trajectory::support_is_both)
       .def("get_supports", &WalkPatternGenerator::Trajectory::get_supports)
@@ -65,7 +71,12 @@ void exposeWalkPatternGenerator()
       .def("update_supports", &WalkPatternGenerator::update_supports)
       .def("get_optimal_zmp", &WalkPatternGenerator::get_optimal_zmp)
       .def("support_default_timesteps", &WalkPatternGenerator::support_default_timesteps)
-      .def("support_default_duration", &WalkPatternGenerator::support_default_duration);
+      .def("support_default_duration", &WalkPatternGenerator::support_default_duration)
+      .add_property("soft", &WalkPatternGenerator::soft, &WalkPatternGenerator::soft)
+      .add_property("zmp_in_support_weight", &WalkPatternGenerator::zmp_in_support_weight,
+                    &WalkPatternGenerator::zmp_in_support_weight)
+      .add_property("stop_end_support_weight", &WalkPatternGenerator::stop_end_support_weight,
+                    &WalkPatternGenerator::stop_end_support_weight);
 
   class__<SwingFoot>("SwingFoot", init<>())
       .def("make_trajectory", &SwingFoot::make_trajectory)
@@ -131,7 +142,13 @@ void exposeWalkPatternGenerator()
       .add_property("trunk_orientation_task",
                     make_function(
                         +[](WalkTasks& tasks) -> OrientationTask& { return *tasks.trunk_orientation_task; },
-                        return_value_policy<reference_existing_object>()));
+                        return_value_policy<reference_existing_object>()))
+      .add_property("com_task", make_function(
+                                    +[](WalkTasks& tasks) -> CoMTask& { return *tasks.com_task; },
+                                    return_value_policy<reference_existing_object>()))
+      .add_property("trunk_task", make_function(
+                                      +[](WalkTasks& tasks) -> PositionTask& { return *tasks.trunk_task; },
+                                      return_value_policy<reference_existing_object>()));
 
   class__<LIPM::Trajectory>("LIPMTrajectory", init<>())
       .def("pos", &LIPM::Trajectory::pos)

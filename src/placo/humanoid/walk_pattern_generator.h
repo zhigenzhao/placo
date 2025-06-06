@@ -53,7 +53,8 @@ public:
     double trunk_pitch;
     double trunk_roll;
 
-    int kept_ts = 0;
+    // Replan succeeded?
+    bool replan_success = true;
 
     Eigen::Affine3d get_T_world_left(double t);
     Eigen::Affine3d get_T_world_right(double t);
@@ -62,6 +63,11 @@ public:
     Eigen::Vector3d get_v_world_left(double t);
     Eigen::Vector3d get_v_world_right(double t);
     Eigen::Vector3d get_v_world_foot(HumanoidRobot::Side side, double t);
+
+    double get_yaw_world_left(double t);
+    double get_yaw_world_right(double t);
+    double get_yaw_world_foot(HumanoidRobot::Side side, double t);
+    double get_yaw_world_trunk(double t);
 
     Eigen::Vector3d get_p_world_CoM(double t);
     Eigen::Vector3d get_v_world_CoM(double t);
@@ -72,6 +78,10 @@ public:
     Eigen::Vector2d get_p_world_ZMP(double t, double omega);
 
     Eigen::Matrix3d get_R_world_trunk(double t);
+
+    Eigen::Vector3d get_p_support_CoM(double t);
+    Eigen::Vector3d get_v_support_CoM(double t);
+    Eigen::Vector2d get_p_support_DCM(double t, double omega);
 
     HumanoidRobot::Side support_side(double t);
     bool support_is_both(double t);
@@ -172,36 +182,37 @@ public:
   /**
    * @brief Replans the supports for a given trajectory given a footsteps planner.
    */
-  std::vector<FootstepsPlanner::Support> replan_supports(FootstepsPlanner& planner, Trajectory& trajectory, double t_replan, double t_last_replan);
-
-  double last_com_planning_duration = 0.;
-  double last_feet_planning_duration = 0.;
+  std::vector<FootstepsPlanner::Support> replan_supports(FootstepsPlanner& planner, Trajectory& trajectory,
+                                                         double t_replan, double t_last_replan);
 
   /**
-   * @brief Updates the supports to ensure DCM viability by adjusting the 
+   * @brief Updates the supports to ensure DCM viability by adjusting the
    * duration and the target of the current swing trajectory.
-   * @param t The current time
-   * @param supports The planned supports
-   * @param world_measured_dcm The measured DCM in world frame
-   * @param world_end_dcm The desired DCM at the end of the current support phase
+   * @param t Current time
+   * @param supports Planned supports
+   * @param world_measured_dcm Measured DCM in world frame
    */
-  std::vector<FootstepsPlanner::Support> update_supports(double t, 
-    std::vector<FootstepsPlanner::Support> supports, Eigen::Vector2d world_measured_dcm);
+  std::vector<FootstepsPlanner::Support> update_supports(double t, std::vector<FootstepsPlanner::Support> supports,
+                                                         Eigen::Vector2d world_measured_dcm);
 
   /**
-   * @brief Computes the best ZMP in the support polygon to move de DCM from 
+   * @brief Computes the best ZMP in the support polygon to move de DCM from
    * world_dcm_start to world_dcm_end in duration.
-   * @param world_dcm_start The initial DCM position in world frame
-   * @param world_dcm_end The desired final DCM position in world frame
-   * @param duration The duration
-   * @param support The support
+   * @param world_dcm_start Initial DCM position in world frame
+   * @param world_dcm_end Desired final DCM position in world frame
+   * @param duration Duration
+   * @param support Support
    */
-  Eigen::Vector2d get_optimal_zmp(Eigen::Vector2d world_dcm_start, Eigen::Vector2d world_dcm_end, 
-    double duration, FootstepsPlanner::Support& support);
+  Eigen::Vector2d get_optimal_zmp(Eigen::Vector2d world_dcm_start, Eigen::Vector2d world_dcm_end, double duration,
+                                  FootstepsPlanner::Support& support);
 
   int support_default_timesteps(FootstepsPlanner::Support& support);
   double support_default_duration(FootstepsPlanner::Support& support);
-  
+
+  bool soft = false;
+  double zmp_in_support_weight = 1e3;
+  double stop_end_support_weight = 1e3;
+
 protected:
   // Robot associated to the WPG
   HumanoidRobot& robot;
@@ -209,16 +220,46 @@ protected:
   // The parameters to use for planning. The values are forwarded to the relevant solvers when needed.
   HumanoidParameters& parameters;
 
+  // Natural frequency of the LIPM (omega = sqrt(g/h))
   double omega;
+
+  // Squared natural frequency of the LIPM (omega^2 = g/h)
   double omega_2;
 
-  void constrain_lipm(problem::Problem& problem, LIPM& lipm, FootstepsPlanner::Support& support, double omega_2, HumanoidParameters& parameters);
+  /**
+   * @brief Constrains the LIPM to ensure that the ZMP stays in the support polygon and that the CoM stops at
+   * the end of an end support.
+   * @param problem Problem to add the constraints to
+   * @param lipm LIPM to constrain
+   * @param support Support to constrain
+   * @param omega_2 Squared natural frequency of the LIPM (omega^2 = g/h)
+   * @param parameters Humanoid parameters to use for the constraints
+   */
+  void constrain_lipm(problem::Problem& problem, LIPM& lipm, FootstepsPlanner::Support& support, double omega_2,
+                      HumanoidParameters& parameters);
 
-  void plan_com(Trajectory& trajectory, std::vector<FootstepsPlanner::Support>& supports, Eigen::Vector2d initial_pos, 
-    Eigen::Vector2d initial_vel = Eigen::Vector2d::Zero(), Eigen::Vector2d initial_acc = Eigen::Vector2d::Zero());
+  /**
+   * @brief Plans the CoM trajectory for a given support. Returns false if the QP solver failed to solve the problem.
+   * @param trajectory Trajectory to fill
+   * @param support Support to plan
+   * @param initial_pos Initial position of the CoM in the world frame
+   * @param initial_vel Initial velocity of the CoM in the world frame
+   * @param initial_acc Initial acceleration of the CoM in the world frame
+   */
+  bool plan_com(Trajectory& trajectory, std::vector<FootstepsPlanner::Support>& supports, Eigen::Vector2d initial_pos,
+                Eigen::Vector2d initial_vel = Eigen::Vector2d::Zero(),
+                Eigen::Vector2d initial_acc = Eigen::Vector2d::Zero());
 
   void plan_dbl_support(Trajectory& trajectory, int part_index);
   void plan_sgl_support(Trajectory& trajectory, int part_index, Trajectory* old_trajectory);
   void plan_feet_trajectories(Trajectory& trajectory, Trajectory* old_trajectory = nullptr);
+
+  /**
+   * @brief Trims the old trajectory to the new time horizon without modifying the CoM and feet trajectories.
+   * @param old_trajectory The old trajectory to trim
+   * @param t_replan The time at which the replan happens
+   * @return The trimmed trajectory
+   */
+  Trajectory trim_old_trajectory(Trajectory& old_trajectory, double t_replan);
 };
 }  // namespace placo::humanoid
